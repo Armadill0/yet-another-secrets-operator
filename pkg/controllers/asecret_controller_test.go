@@ -2212,6 +2212,65 @@ func TestCreateOrUpdateAwsSecretBinary(t *testing.T) {
 	}
 }
 
+func TestGetTargetSecretName(t *testing.T) {
+	tests := []struct {
+		name     string
+		aSecret  *secretsv1alpha1.ASecret
+		expected string
+	}{
+		{
+			name: "uses explicit targetSecretName when specified",
+			aSecret: &secretsv1alpha1.ASecret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-asecret",
+					Namespace: "default",
+				},
+				Spec: secretsv1alpha1.ASecretSpec{
+					TargetSecretName: "custom-secret-name",
+					AwsSecretPath:    "/test/secret",
+				},
+			},
+			expected: "custom-secret-name",
+		},
+		{
+			name: "defaults to ASecret name when targetSecretName is empty",
+			aSecret: &secretsv1alpha1.ASecret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-asecret",
+					Namespace: "default",
+				},
+				Spec: secretsv1alpha1.ASecretSpec{
+					TargetSecretName: "",
+					AwsSecretPath:    "/test/secret",
+				},
+			},
+			expected: "my-asecret",
+		},
+		{
+			name: "defaults to ASecret name when targetSecretName is not set",
+			aSecret: &secretsv1alpha1.ASecret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "another-asecret",
+					Namespace: "production",
+				},
+				Spec: secretsv1alpha1.ASecretSpec{
+					// TargetSecretName not set
+					AwsSecretPath: "/prod/secret",
+				},
+			},
+			expected: "another-asecret",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &ASecretReconciler{}
+			result := r.getTargetSecretName(tt.aSecret)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // Helper function
 func boolPtr(b bool) *bool {
 	return &b

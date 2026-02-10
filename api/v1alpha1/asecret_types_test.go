@@ -263,6 +263,28 @@ func TestTargetSecretTemplateTypeOnly(t *testing.T) {
 	assert.Nil(t, template.Annotations)
 }
 
+func TestASecretWithoutTargetSecretName(t *testing.T) {
+	secret := &ASecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-asecret",
+			Namespace: "default",
+		},
+		Spec: ASecretSpec{
+			// TargetSecretName not specified - should default to ASecret name
+			AwsSecretPath: "dev/myapp/secrets",
+			Data: map[string]DataSource{
+				"username": {
+					Value: "admin",
+				},
+			},
+		},
+	}
+
+	assert.Equal(t, "my-asecret", secret.Name)
+	assert.Empty(t, secret.Spec.TargetSecretName)
+	assert.Equal(t, "dev/myapp/secrets", secret.Spec.AwsSecretPath)
+}
+
 func TestASecretWithCompleteConfiguration(t *testing.T) {
 	onlyImport := true
 	refreshInterval := metav1.Duration{Duration: 30 * time.Minute}

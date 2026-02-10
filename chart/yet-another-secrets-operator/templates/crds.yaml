@@ -228,8 +228,9 @@ spec:
                 description: Tags to apply to the AWS Secret (optional)
                 type: object
               targetSecretName:
-                description: TargetSecretName is the name of the Kubernetes Secret
-                  to be created/managed
+                description: |-
+                  TargetSecretName is the name of the Kubernetes Secret to be created/managed
+                  If not specified, defaults to the ASecret name
                 type: string
               targetSecretTemplate:
                 description: TargetSecretTemplate defines metadata to be applied to
@@ -264,7 +265,6 @@ spec:
                 type: string
             required:
             - awsSecretPath
-            - targetSecretName
             type: object
           status:
             description: ASecretStatus defines the observed state of ASecret

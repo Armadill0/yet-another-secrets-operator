@@ -8,7 +8,9 @@ import (
 // ASecretSpec defines the desired state of ASecret
 type ASecretSpec struct {
 	// TargetSecretName is the name of the Kubernetes Secret to be created/managed
-	TargetSecretName string `json:"targetSecretName"`
+	// If not specified, defaults to the ASecret name
+	// +optional
+	TargetSecretName string `json:"targetSecretName,omitempty"`
 
 	// TargetSecretTemplate defines metadata to be applied to the Kubernetes Secret
 	// +optional

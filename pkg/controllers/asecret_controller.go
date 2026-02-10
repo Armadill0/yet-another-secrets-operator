@@ -76,7 +76,7 @@ func (r *ASecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	existingSecret := &corev1.Secret{}
 	namespacedName := k8sTypes.NamespacedName{
 		Namespace: req.Namespace,
-		Name:      aSecret.Spec.TargetSecretName,
+		Name:      r.getTargetSecretName(&aSecret),
 	}
 	kubeSecretExists := true
 	if err := r.Get(ctx, namespacedName, existingSecret); err != nil {
@@ -84,7 +84,7 @@ func (r *ASecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			kubeSecretExists = false
 			existingSecret = &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      aSecret.Spec.TargetSecretName,
+					Name:      r.getTargetSecretName(&aSecret),
 					Namespace: req.Namespace,
 				},
 			}
@@ -710,6 +710,14 @@ func (r *ASecretReconciler) generateValue(ctx context.Context, generatorName str
 	}
 
 	return value, nil
+}
+
+// getTargetSecretName returns the target secret name, defaulting to the ASecret name if not specified
+func (r *ASecretReconciler) getTargetSecretName(aSecret *secretsv1alpha1.ASecret) string {
+	if aSecret.Spec.TargetSecretName != "" {
+		return aSecret.Spec.TargetSecretName
+	}
+	return aSecret.Name
 }
 
 // SetupWithManager sets up the controller with the Manager.
