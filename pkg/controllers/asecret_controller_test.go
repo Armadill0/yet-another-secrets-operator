@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -15,6 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	secretsv1alpha1 "github.com/yaso/yet-another-secrets-operator/api/v1alpha1"
 	awsclient "github.com/yaso/yet-another-secrets-operator/pkg/providers/aws/client"
@@ -28,6 +31,7 @@ type SecretsManagerAPI interface {
 	CreateSecret(ctx context.Context, params *secretsmanager.CreateSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error)
 	PutSecretValue(ctx context.Context, params *secretsmanager.PutSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error)
 	TagResource(ctx context.Context, params *secretsmanager.TagResourceInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error)
+	DeleteSecret(ctx context.Context, params *secretsmanager.DeleteSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error)
 }
 
 // MockSecretsManagerClient is a mock implementation of the SecretsManager client
@@ -73,6 +77,13 @@ func (m *MockSecretsManagerClient) TagResource(ctx context.Context, params *secr
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*secretsmanager.TagResourceOutput), args.Error(1)
+}
+func (m *MockSecretsManagerClient) DeleteSecret(ctx context.Context, params *secretsmanager.DeleteSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error) {
+	args := m.Called(ctx, params)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*secretsmanager.DeleteSecretOutput), args.Error(1)
 }
 
 func TestApplyTargetSecretTemplate(t *testing.T) {
@@ -2267,6 +2278,231 @@ func TestGetTargetSecretName(t *testing.T) {
 			r := &ASecretReconciler{}
 			result := r.getTargetSecretName(tt.aSecret)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// Tests for cleanup functionality
+func TestHandleDeletion(t *testing.T) {
+	tests := []struct {
+		name                   string
+		cleanupPolicy          string
+		hasFinalizer           bool
+		describeError          error
+		deleteError            error
+		expectDelete           bool
+		expectFinalizerRemoved bool
+		expectError            bool
+	}{
+		{
+			name:                   "delete policy triggers AWS deletion",
+			cleanupPolicy:          "Delete",
+			hasFinalizer:           true,
+			describeError:          nil,
+			deleteError:            nil,
+			expectDelete:           true,
+			expectFinalizerRemoved: true,
+			expectError:            false,
+		},
+		{
+			name:                   "skip policy does not delete AWS secret",
+			cleanupPolicy:          "Skip",
+			hasFinalizer:           true,
+			describeError:          nil,
+			deleteError:            nil,
+			expectDelete:           false,
+			expectFinalizerRemoved: true,
+			expectError:            false,
+		},
+		{
+			name:                   "default empty policy skips deletion",
+			cleanupPolicy:          "",
+			hasFinalizer:           true,
+			describeError:          nil,
+			deleteError:            nil,
+			expectDelete:           false,
+			expectFinalizerRemoved: true,
+			expectError:            false,
+		},
+		{
+			name:                   "no finalizer skips cleanup",
+			cleanupPolicy:          "Delete",
+			hasFinalizer:           false,
+			describeError:          nil,
+			deleteError:            nil,
+			expectDelete:           false,
+			expectFinalizerRemoved: false,
+			expectError:            false,
+		},
+		{
+			name:                   "secret not found is handled gracefully",
+			cleanupPolicy:          "Delete",
+			hasFinalizer:           true,
+			describeError:          &smTypes.ResourceNotFoundException{},
+			deleteError:            nil,
+			expectDelete:           false,
+			expectFinalizerRemoved: true,
+			expectError:            false,
+		},
+		{
+			name:                   "delete error is returned",
+			cleanupPolicy:          "Delete",
+			hasFinalizer:           true,
+			describeError:          nil,
+			deleteError:            errors.New("AWS delete error"),
+			expectDelete:           true,
+			expectFinalizerRemoved: false,
+			expectError:            true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockSMClient := &MockSecretsManagerClient{}
+			ctx := context.Background()
+
+			aSecret := &secretsv1alpha1.ASecret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "default",
+				},
+				Spec: secretsv1alpha1.ASecretSpec{
+					TargetSecretName: "my-secret",
+					AwsSecretPath:    "/test/secret",
+					CleanupPolicy:    tt.cleanupPolicy,
+				},
+			}
+
+			// Only add finalizer and deletion timestamp together
+			// Kubernetes won't allow objects with deletionTimestamp but no finalizers
+			if tt.hasFinalizer {
+				aSecret.Finalizers = []string{FinalizerName}
+				aSecret.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			}
+
+			// Create a scheme and add our types
+			s := runtime.NewScheme()
+			err := secretsv1alpha1.AddToScheme(s)
+			require.NoError(t, err)
+
+			// Create a fake client with the ASecret
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(aSecret).
+				Build()
+
+			// Mock AWS calls if deletion is expected
+			if tt.expectDelete || tt.describeError != nil {
+				mockSMClient.On("DescribeSecret", mock.Anything, mock.MatchedBy(func(input *secretsmanager.DescribeSecretInput) bool {
+					return *input.SecretId == "/test/secret"
+				})).Return(&secretsmanager.DescribeSecretOutput{}, tt.describeError)
+			}
+
+			if tt.expectDelete && tt.describeError == nil {
+				mockSMClient.On("DeleteSecret", mock.Anything, mock.MatchedBy(func(input *secretsmanager.DeleteSecretInput) bool {
+					return *input.SecretId == "/test/secret" && *input.ForceDeleteWithoutRecovery == true
+				})).Return(&secretsmanager.DeleteSecretOutput{}, tt.deleteError)
+			}
+
+			r := &ASecretReconciler{
+				Client:         fakeClient,
+				Scheme:         s,
+				SecretsManager: mockSMClient,
+				Log:            logr.Discard(),
+			}
+
+			_, err = r.handleDeletion(ctx, aSecret, r.Log)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			if tt.expectFinalizerRemoved {
+				assert.NotContains(t, aSecret.Finalizers, FinalizerName)
+			} else if tt.hasFinalizer {
+				assert.Contains(t, aSecret.Finalizers, FinalizerName)
+			}
+
+			mockSMClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestDeleteAwsSecret(t *testing.T) {
+	tests := []struct {
+		name          string
+		secretPath    string
+		describeError error
+		deleteError   error
+		expectError   bool
+	}{
+		{
+			name:          "successful deletion",
+			secretPath:    "/test/secret",
+			describeError: nil,
+			deleteError:   nil,
+			expectError:   false,
+		},
+		{
+			name:          "secret not found is not an error",
+			secretPath:    "/test/nonexistent",
+			describeError: &smTypes.ResourceNotFoundException{},
+			deleteError:   nil,
+			expectError:   false,
+		},
+		{
+			name:          "describe error is returned",
+			secretPath:    "/test/secret",
+			describeError: errors.New("AWS describe error"),
+			deleteError:   nil,
+			expectError:   true,
+		},
+		{
+			name:          "delete error is returned",
+			secretPath:    "/test/secret",
+			describeError: nil,
+			deleteError:   errors.New("AWS delete error"),
+			expectError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := &MockSecretsManagerClient{}
+			ctx := context.Background()
+
+			aSecret := &secretsv1alpha1.ASecret{
+				Spec: secretsv1alpha1.ASecretSpec{
+					AwsSecretPath: tt.secretPath,
+				},
+			}
+
+			mockClient.On("DescribeSecret", mock.Anything, mock.MatchedBy(func(input *secretsmanager.DescribeSecretInput) bool {
+				return *input.SecretId == tt.secretPath
+			})).Return(&secretsmanager.DescribeSecretOutput{}, tt.describeError)
+
+			if tt.describeError == nil {
+				mockClient.On("DeleteSecret", mock.Anything, mock.MatchedBy(func(input *secretsmanager.DeleteSecretInput) bool {
+					return *input.SecretId == tt.secretPath && *input.ForceDeleteWithoutRecovery == true
+				})).Return(&secretsmanager.DeleteSecretOutput{}, tt.deleteError)
+			}
+
+			r := &ASecretReconciler{
+				SecretsManager: mockClient,
+				Log:            logr.Discard(),
+			}
+
+			err := r.deleteAwsSecret(ctx, aSecret, r.Log)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			mockClient.AssertExpectations(t)
 		})
 	}
 }

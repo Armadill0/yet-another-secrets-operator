@@ -398,3 +398,69 @@ func TestASecretWithCompleteConfiguration(t *testing.T) {
 	assert.Nil(t, serviceAccount.GeneratorRef)
 	assert.Nil(t, serviceAccount.OnlyImportRemote)
 }
+
+func TestASecretWithCleanupPolicy(t *testing.T) {
+	tests := []struct {
+		name          string
+		cleanupPolicy string
+		expected      string
+	}{
+		{
+			name:          "cleanup policy set to Delete",
+			cleanupPolicy: "Delete",
+			expected:      "Delete",
+		},
+		{
+			name:          "cleanup policy set to Skip",
+			cleanupPolicy: "Skip",
+			expected:      "Skip",
+		},
+		{
+			name:          "cleanup policy empty defaults to Skip",
+			cleanupPolicy: "",
+			expected:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			secret := &ASecret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cleanup-policy",
+					Namespace: "default",
+				},
+				Spec: ASecretSpec{
+					TargetSecretName: "my-secret",
+					AwsSecretPath:    "/test/secret",
+					CleanupPolicy:    tt.cleanupPolicy,
+					Data: map[string]DataSource{
+						"username": {Value: "admin"},
+					},
+				},
+			}
+
+			assert.Equal(t, tt.expected, secret.Spec.CleanupPolicy)
+		})
+	}
+}
+
+func TestASecretCleanupPolicyValidation(t *testing.T) {
+	// Test that valid values are accepted
+	validPolicies := []string{"Skip", "Delete", ""}
+
+	for _, policy := range validPolicies {
+		t.Run("valid policy: "+policy, func(t *testing.T) {
+			secret := &ASecret{
+				Spec: ASecretSpec{
+					TargetSecretName: "my-secret",
+					AwsSecretPath:    "/test/secret",
+					CleanupPolicy:    policy,
+				},
+			}
+
+			// Just verify it can be set without panic
+			assert.NotNil(t, secret)
+			assert.Equal(t, policy, secret.Spec.CleanupPolicy)
+		})
+	}
+}

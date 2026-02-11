@@ -36,6 +36,15 @@ type ASecretReconciler struct {
 	SecretsManager awsclient.SecretsManagerAPI
 }
 
+const (
+	// FinalizerName is the name of the finalizer used for cleanup
+	FinalizerName = "yet-another-secrets.io/finalizer"
+	// CleanupPolicySkip means leave AWS secret untouched on deletion
+	CleanupPolicySkip = "Skip"
+	// CleanupPolicyDelete means delete AWS secret on deletion
+	CleanupPolicyDelete = "Delete"
+)
+
 //+kubebuilder:rbac:groups=yet-another-secrets.io,resources=asecrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=yet-another-secrets.io,resources=asecrets/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=yet-another-secrets.io,resources=asecrets/finalizers,verbs=update
@@ -54,6 +63,21 @@ func (r *ASecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Handle deletion with finalizer
+	if !aSecret.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, &aSecret, log)
+	}
+
+	// Add finalizer if it doesn't exist
+	if !controllerutil.ContainsFinalizer(&aSecret, FinalizerName) {
+		controllerutil.AddFinalizer(&aSecret, FinalizerName)
+		if err := r.Update(ctx, &aSecret); err != nil {
+			log.Error(err, "Failed to add finalizer")
+			return ctrl.Result{}, err
+		}
+		log.Info("Added finalizer to ASecret")
 	}
 
 	// Use the injected AWS client
@@ -718,6 +742,84 @@ func (r *ASecretReconciler) getTargetSecretName(aSecret *secretsv1alpha1.ASecret
 		return aSecret.Spec.TargetSecretName
 	}
 	return aSecret.Name
+}
+
+// handleDeletion handles the cleanup logic when an ASecret is being deleted
+func (r *ASecretReconciler) handleDeletion(ctx context.Context, aSecret *secretsv1alpha1.ASecret, log logr.Logger) (ctrl.Result, error) {
+	log.Info("Handling ASecret deletion")
+
+	// Check if finalizer is present
+	if !controllerutil.ContainsFinalizer(aSecret, FinalizerName) {
+		log.Info("No finalizer present, skipping cleanup")
+		return ctrl.Result{}, nil
+	}
+
+	// Determine cleanup policy (default to Skip if not set)
+	cleanupPolicy := aSecret.Spec.CleanupPolicy
+	if cleanupPolicy == "" {
+		cleanupPolicy = CleanupPolicySkip
+	}
+
+	log.Info("Processing cleanup", "policy", cleanupPolicy)
+
+	// Execute cleanup based on policy
+	if cleanupPolicy == CleanupPolicyDelete {
+		if err := r.deleteAwsSecret(ctx, aSecret, log); err != nil {
+			log.Error(err, "Failed to delete AWS secret during cleanup")
+			// Return error to retry
+			return ctrl.Result{}, err
+		}
+		log.Info("Successfully deleted AWS secret", "path", aSecret.Spec.AwsSecretPath)
+	} else {
+		log.Info("Skipping AWS secret deletion", "policy", cleanupPolicy)
+	}
+
+	// Remove finalizer
+	controllerutil.RemoveFinalizer(aSecret, FinalizerName)
+	if err := r.Update(ctx, aSecret); err != nil {
+		log.Error(err, "Failed to remove finalizer")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Successfully completed cleanup")
+	return ctrl.Result{}, nil
+}
+
+// deleteAwsSecret deletes the AWS secret based on the cleanup policy
+func (r *ASecretReconciler) deleteAwsSecret(ctx context.Context, aSecret *secretsv1alpha1.ASecret, log logr.Logger) error {
+	secretPath := aSecret.Spec.AwsSecretPath
+
+	log.Info("Deleting AWS secret", "path", secretPath)
+
+	// First check if the secret exists
+	_, err := r.SecretsManager.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{
+		SecretId: aws.String(secretPath),
+	})
+
+	if err != nil {
+		var resourceNotFound *smTypes.ResourceNotFoundException
+		if errors.As(err, &resourceNotFound) {
+			log.Info("AWS secret already deleted or doesn't exist", "path", secretPath)
+			return nil
+		}
+		log.Error(err, "Failed to describe AWS secret before deletion")
+		return err
+	}
+
+	// Delete the secret with immediate deletion (no recovery window)
+	// You can adjust RecoveryWindowInDays if you want a recovery period
+	_, err = r.SecretsManager.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
+		SecretId:                   aws.String(secretPath),
+		ForceDeleteWithoutRecovery: aws.Bool(true),
+	})
+
+	if err != nil {
+		log.Error(err, "Failed to delete AWS secret", "path", secretPath)
+		return fmt.Errorf("failed to delete AWS secret %s: %w", secretPath, err)
+	}
+
+	log.Info("AWS secret deleted successfully", "path", secretPath)
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

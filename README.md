@@ -93,6 +93,40 @@ spec:
 - `annotations`: Custom annotations to apply to the Kubernetes Secret
 - `type`: Kubernetes Secret type (e.g., `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`)
 
+## Cleanup Policy
+
+You can control what happens to the AWS secret when an ASecret is deleted using the `cleanupPolicy` field:
+
+```yaml
+apiVersion: yet-another-secrets.io/v1alpha1
+kind: ASecret
+metadata:
+  name: app-secrets
+  namespace: default
+spec:
+  targetSecretName: my-app-secret
+  awsSecretPath: /my-app/secrets
+  # CleanupPolicy: "Skip" (default) or "Delete"
+  cleanupPolicy: Delete  # This will delete the AWS secret when ASecret is deleted
+  data:
+    username:
+      value: admin
+```
+
+### Cleanup Policy Options
+
+- **`Skip`** (default): The AWS secret remains untouched when the ASecret is deleted. Use this when:
+  - Multiple ASecrets reference the same AWS secret
+  - The AWS secret is managed externally (e.g., by Terraform)
+  - You want to preserve secrets for recovery purposes
+
+- **`Delete`**: The AWS secret is permanently deleted from AWS Secrets Manager when the ASecret is deleted. Use this when:
+  - The ASecret fully owns the AWS secret
+  - You want automatic cleanup to prevent orphaned secrets
+  - The secret is ephemeral and should not persist
+
+**Note**: When `cleanupPolicy: Delete` is used, the deletion is immediate and cannot be recovered. Make sure this is the desired behavior before using it.
+
 ## How it works
 
 1. The operator checks if the secret exists in AWS Secrets Manager.
@@ -100,6 +134,7 @@ spec:
 3. For keys with `onlyImportRemote: true`, only existing remote values are imported - no new values are created.
 4. If there are keys in the ASecret that aren't in the AWS Secret or Kubernetes Secret, they get added (either using the hardcoded value or by generating one).
    1. (optional) if you set removeRemoteKeys, then it'll also remove the remote keys that are not in the ASecret
+5. When an ASecret is deleted, the cleanup behavior is controlled by the `cleanupPolicy` field (defaults to `Skip`)
 
 ```markdown README-helm.md
 apiVersion: yet-another-secrets.io/v1alpha1

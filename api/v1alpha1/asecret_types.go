@@ -51,6 +51,15 @@ type ASecretSpec struct {
 	// Example: "10m", "1h"
 	// +optional
 	RefreshInterval *metav1.Duration `json:"refreshInterval,omitempty"`
+
+	// CleanupPolicy defines what happens to the AWS secret when the ASecret is deleted.
+	// Allowed values: "Skip" (default), "Delete"
+	// - "Skip": Leave the AWS secret untouched when ASecret is deleted
+	// - "Delete": Delete the AWS secret when ASecret is deleted
+	// +kubebuilder:validation:Enum=Skip;Delete
+	// +kubebuilder:default=Skip
+	// +optional
+	CleanupPolicy string `json:"cleanupPolicy,omitempty"`
 }
 
 // TargetSecretTemplate defines the template for the Kubernetes Secret metadata

@@ -181,6 +181,17 @@ spec:
                 description: AwsSecretPath is the path in AWS SecretsManager where
                   the secret is stored
                 type: string
+              cleanupPolicy:
+                default: Skip
+                description: |-
+                  CleanupPolicy defines what happens to the AWS secret when the ASecret is deleted.
+                  Allowed values: "Skip" (default), "Delete"
+                  - "Skip": Leave the AWS secret untouched when ASecret is deleted
+                  - "Delete": Delete the AWS secret when ASecret is deleted
+                enum:
+                - Skip
+                - Delete
+                type: string
               data:
                 additionalProperties:
                   description: DataSource defines the source of the secret data
